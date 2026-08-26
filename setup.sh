@@ -8,6 +8,12 @@
 #   bash setup.sh light           # Qwen3.8-27B quantifié 4-bit via Ollama
 #   bash setup.sh uncensored      # Qwen3.8-27B-Uncensored (abliterated) via Ollama
 #
+# Variables d'environnement optionnelles :
+#   HF_TOKEN   token Hugging Face (recommandé, évite le rate-limit 429 sur les téléchargements)
+#   PORT       port de l'API vLLM (défaut 8000)
+#   MAX_CTX    longueur de contexte max (défaut 131072)
+#   WORKDIR    dossier de travail persistant (défaut /workspace)
+#
 # Pensé pour tourner sur un Pod RunPod avec image de base "RunPod PyTorch 2.x"
 # et un GPU A6000 (48GB VRAM). Doit être lancé en root ou avec sudo.
 
@@ -19,7 +25,16 @@ set -euo pipefail
 PORT="${PORT:-8000}"
 MAX_CTX="${MAX_CTX:-131072}"          # 128k par défaut, le modèle supporte jusqu'à 262k natif
 WORKDIR="${WORKDIR:-/workspace}"
+HF_TOKEN="${HF_TOKEN:-}"
 MODEL_CHOICE="${1:-}"
+
+# ------------------------------------------------------------------
+# Outils système requis (nvidia-smi a besoin de pciutils dans
+# certaines images RunPod minimalistes, sinon il échoue silencieusement)
+# ------------------------------------------------------------------
+echo "▶ Vérification des paquets système (pciutils, curl, git)..."
+apt-get update -qq
+apt-get install -y -qq pciutils curl git >/dev/null
 
 # ------------------------------------------------------------------
 # Vérification GPU
@@ -34,6 +49,18 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
+
+# ------------------------------------------------------------------
+# Login Hugging Face si un token est fourni (évite le rate-limit 429)
+# ------------------------------------------------------------------
+if [[ -n "$HF_TOKEN" ]]; then
+  pip install -q -U "huggingface_hub[cli]"
+  huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential >/dev/null
+  echo "✅ Connecté à Hugging Face avec le token fourni."
+else
+  echo "ℹ️  Aucun HF_TOKEN fourni. Ça fonctionne en général, mais si vous êtes"
+  echo "   rate-limité (erreur 429), relancez avec : HF_TOKEN=hf_xxx bash setup.sh ..."
+fi
 
 # ------------------------------------------------------------------
 # Menu interactif si aucun argument n'est passé
@@ -79,6 +106,31 @@ EOF
 }
 
 # ------------------------------------------------------------------
+# Fonction commune : télécharge un GGUF depuis HF puis le crée dans
+# Ollama via un Modelfile local. Contourne le bug Ollama :
+# "realm host huggingface.co does not match original host hf.co"
+# qui empêche `ollama pull hf.co/...` de fonctionner de façon fiable.
+# ------------------------------------------------------------------
+ollama_create_from_hf() {
+  local hf_repo="$1"       # ex: unsloth/Qwen3.8-27B-GGUF
+  local gguf_file="$2"     # ex: Qwen3.8-27B-Q4_K_M.gguf
+  local ollama_name="$3"   # ex: qwen3.8-27b
+
+  pip install -q -U "huggingface_hub[cli]"
+  mkdir -p "$WORKDIR/models"
+
+  echo "  Téléchargement de $gguf_file depuis $hf_repo..."
+  huggingface-cli download "$hf_repo" "$gguf_file" \
+    --local-dir "$WORKDIR/models" --local-dir-use-symlinks False
+
+  cat > "$WORKDIR/models/Modelfile-${ollama_name}" <<EOF
+FROM $WORKDIR/models/$gguf_file
+EOF
+
+  ollama create "$ollama_name" -f "$WORKDIR/models/Modelfile-${ollama_name}"
+}
+
+# ------------------------------------------------------------------
 # Option 2 : version légère GGUF via Ollama
 # ------------------------------------------------------------------
 install_light() {
@@ -86,8 +138,8 @@ install_light() {
   curl -fsSL https://ollama.com/install.sh | sh
   (ollama serve &>/tmp/ollama.log &)
   sleep 5
-  ollama pull hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M
-  echo "✅ Installation terminée. Lancez avec : ollama run hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M"
+  ollama_create_from_hf "unsloth/Qwen3.8-27B-GGUF" "Qwen3.8-27B-Q4_K_M.gguf" "qwen3.8-27b"
+  echo "✅ Installation terminée. Lancez avec : ollama run qwen3.8-27b"
 }
 
 # ------------------------------------------------------------------
@@ -112,8 +164,8 @@ WARN
   curl -fsSL https://ollama.com/install.sh | sh
   (ollama serve &>/tmp/ollama.log &)
   sleep 5
-  ollama pull hf.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF:Q4_K_M
-  echo "✅ Installation terminée. Lancez avec : ollama run hf.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF:Q4_K_M"
+  ollama_create_from_hf "orcarouter/Qwen3.8-27B-Uncensored-GGUF" "Qwen3.8-27B-Uncensored-Q4_K_M.gguf" "qwen3.8-27b-uncensored"
+  echo "✅ Installation terminée. Lancez avec : ollama run qwen3.8-27b-uncensored"
 }
 
 # ------------------------------------------------------------------
