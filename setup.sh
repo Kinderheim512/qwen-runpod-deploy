@@ -39,9 +39,9 @@ EXTRA="${2:-}"
 # Outils système requis (nvidia-smi a besoin de pciutils dans
 # certaines images RunPod minimalistes, sinon il échoue silencieusement)
 # ------------------------------------------------------------------
-echo "▶ Vérification des paquets système (pciutils, curl, git)..."
+echo "▶ Vérification des paquets système (pciutils, curl, git, zstd)..."
 apt-get update -qq
-apt-get install -y -qq pciutils curl git >/dev/null
+apt-get install -y -qq pciutils curl git zstd >/dev/null
 
 # ------------------------------------------------------------------
 # Vérification GPU
